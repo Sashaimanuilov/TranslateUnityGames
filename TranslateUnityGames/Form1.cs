@@ -6,37 +6,9 @@ using System.Windows.Forms;
 using System.Drawing;
 using System.Diagnostics;
 
-// =============== КАСТОМНЫЙ ПРОГРЕССБАР ===============
-public class CyberProgressBar : ProgressBar
-{
-    public CyberProgressBar()
-    {
-        this.SetStyle(ControlStyles.UserPaint, true);
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        var g = e.Graphics;
-        var rect = new Rectangle(0, 0, (int)(Width * ((double)Value / Maximum)), Height);
-
-        // Фон
-        using (var bgBrush = new SolidBrush(Color.FromArgb(20, 20, 30)))
-            g.FillRectangle(bgBrush, 0, 0, Width, Height);
-
-        // Прогресс (пурпурный неон)
-        using (var progressBrush = new SolidBrush(Color.FromArgb(100, 0, 255)))
-            g.FillRectangle(progressBrush, rect);
-
-        // Рамка (голубой неон)
-        using (var pen = new Pen(Color.Cyan, 1))
-            g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-    }
-}
-
-// =============== ОСНОВНАЯ ФОРМА ===============
 namespace CyberManhuntLocalizer
 {
-    public class Form1 : Form
+    public partial class Form1 : Form
     {
         private TextBox txtGamePath;
         private Button btnBrowse;
@@ -44,13 +16,18 @@ namespace CyberManhuntLocalizer
         private Button btnUninstall;
         private Button btnAbout;
         private TextBox txtLog;
-        private CyberProgressBar progressBar;
+        private ProgressBar progressBar;
         private Label lblProgress;
+
+        private DateTime _lockoutEnd = DateTime.MinValue;
+        private int _failedAttempts = 0;
+        private const string OWNER_PASSWORD = "Duave3691215";
 
         public Form1()
         {
             InitializeComponent();
             SetupCyberpunkStyle();
+            CheckForAppUpdateOnStartup();
         }
 
         private void InitializeComponent()
@@ -145,13 +122,21 @@ namespace CyberManhuntLocalizer
             btnAbout.FlatAppearance.BorderSize = 0;
             btnAbout.Click += BtnAbout_Click;
 
-            progressBar = new CyberProgressBar()
+            progressBar = new ProgressBar
             {
                 Location = new Point(20, 185),
                 Width = 660,
                 Height = 20,
                 Style = ProgressBarStyle.Continuous
             };
+            progressBar = new CyberProgressBar
+            {
+                Location = new Point(20, 185),
+                Width = 660,
+                Height = 20,
+                Style = ProgressBarStyle.Continuous
+            };
+            // Никаких SetStyle или Paint — всё внутри класса!
 
             lblProgress = new Label
             {
@@ -214,7 +199,7 @@ namespace CyberManhuntLocalizer
                 int start = response.IndexOf("\"href\":\"") + 8;
                 int end = response.IndexOf("\"", start);
                 if (start < 8 || end <= start)
-                    throw new Exception("Не удалось получить прямую ссылку с Яндекс.Диска");
+                    throw new Exception("Не удалось получить прямую ссылку");
                 SetProgress(20, "Ссылка получена");
                 return response.Substring(start, end - start).Replace("\\/", "/");
             }
@@ -225,7 +210,7 @@ namespace CyberManhuntLocalizer
 
         private async Task RunProcess(string yandexLink, bool isInstall)
         {
-            string action = isInstall ? "УСТАНОВКА РУСИФИКАТОРА" : "УДАЛЕНИЕ РУСИФИКАТОРА";
+            string action = isInstall ? "УСТАНОВКА РУСИФИКАТОР" : "УДАЛЕНИЕ РУСИФИКАТОРА";
             string successMsg = isInstall ? "Русификатор успешно установлен!" : "Оригинальная версия восстановлена!";
 
             string gameFolder = txtGamePath.Text.Trim();
@@ -246,6 +231,8 @@ namespace CyberManhuntLocalizer
 
             var btns = new[] { btnInstall, btnUninstall, btnBrowse };
             foreach (var btn in btns) btn.Enabled = false;
+            progressBar.Visible = true;
+            lblProgress.Visible = true;
             SetProgress(0, "Начало...");
 
             try
@@ -374,6 +361,74 @@ namespace CyberManhuntLocalizer
 
             aboutForm.Controls.AddRange(new Control[] { pictureBox, lblText, linkGuide, linkProfile });
             aboutForm.Show();
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.F6)
+            {
+                if (DateTime.Now < _lockoutEnd)
+                {
+                    MessageBox.Show($"Доступ заблокирован до {Math.Ceiling((_lockoutEnd - DateTime.Now).TotalMinutes)} мин.", "Блокировка");
+                    return true;
+                }
+
+                var input = new Form();
+                var txt = new TextBox { PasswordChar = '*', Width = 200, Top = 40 };
+                var btn = new Button { Text = "Войти", Top = 80, DialogResult = DialogResult.OK };
+                input.Controls.AddRange(new Control[] {
+                    new Label { Text = "Пароль владельца:", Location = new Point(10, 10) },
+                    txt, btn
+                });
+                input.AcceptButton = btn;
+                input.StartPosition = FormStartPosition.CenterParent;
+                input.FormBorderStyle = FormBorderStyle.FixedDialog;
+
+                if (input.ShowDialog(this) == DialogResult.OK)
+                {
+                    if (txt.Text == OWNER_PASSWORD)
+                    {
+                        _failedAttempts = 0;
+                        new OwnerPanel().Show();
+                    }
+                    else
+                    {
+                        _failedAttempts++;
+                        if (_failedAttempts >= 3)
+                        {
+                            _lockoutEnd = DateTime.Now.AddMinutes(3);
+                            _failedAttempts = 0;
+                            MessageBox.Show("Доступ заблокирован на 3 минуты!", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                        else
+                        {
+                            MessageBox.Show("Неверный пароль!", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                    }
+                }
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        private async void CheckForAppUpdateOnStartup()
+        {
+            try
+            {
+                var updates = UpdateManager.LoadUpdates();
+                var current = UpdateManager.GetCurrentVersion();
+                if (Version.TryParse(updates.PublishedVersion, out var published) &&
+                    published > current)
+                {
+                    if (MessageBox.Show(
+                        $"Доступна новая версия {updates.PublishedVersion}!\n\n{updates.GetPublishedUpdate()?.ReleaseNotes}\n\nОбновить сейчас?",
+                        "Обновление", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+                    {
+                        await UpdateManager.DownloadAndInstall(this, updates.GetPublishedUpdate().DownloadUrl);
+                    }
+                }
+            }
+            catch { /* игнор */ }
         }
     }
 }
